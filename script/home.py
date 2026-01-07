@@ -1,20 +1,23 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime
 import re
 import sys
-
+import os
 
 # 配置常量
-sourceIcon51ZMT = "https://epg.51zmt.top:8001"
-sourceChengduMulticast = "https://epg.51zmt.top:8001/sctvmulticast.html"
-homeLanAddress = "http://192.168.20.40:5140"
-catchupBaseUrl = "http://192.168.20.40:5140"
-totalEPG = "https://epg.51zmt.top:8001/e.xml,https://epg.112114.xyz/pp.xml"
+homeLanAddress = "http://192.168.10.2:4022"
+catchupBaseUrl = "http://192.168.10.2:4022"
+
+# EPG源 - 暂时留空，可以后续添加可用的EPG源
+totalEPG = "https://epg.112114.xyz/pp.xml"  # 例如："https://example.com/epg.xml,https://example2.com/epg2.xml"
+
+# 本地文件路径 - 使用相对路径
+script_dir = os.path.dirname(os.path.abspath(__file__))
+local_multicast_file = os.path.join(script_dir, "sctvmulticast.html")
 
 # 分组配置
 groupCCTV = ["CCTV", "CETV", "CGTN"]
@@ -23,8 +26,8 @@ groupSC = ["SCTV", "四川", "CDTV", "熊猫", "峨眉", "成都"]
 group4K = ["4K"]
 listUnused = ["单音轨", "画中画", "热门", "直播室", "爱", "92"]
 
-
 index = 1
+
 def getID():
     global index
     index = index + 1
@@ -64,19 +67,17 @@ def filterCategory(v):
     
     return categories
 
-def findIcon(m, id):
-    for v in m:
-        if v["name"] == id:
-            return urljoin(sourceIcon51ZMT, v["icon"])
+def findIcon(channel_name):
+    """
+    查找频道图标
+    可以根据需要添加图标映射
+    """
     return ""
 
 def buildCatchupSource(rtsp_url, original_url):
     """
     构建回看源URL
     从rtsp URL中提取主机地址和路径部分，与catchupBaseUrl拼接
-    例如: rtsp://182.139.235.40/PLTV/88888896/224/3221228807/10000100000000060000000003732597_0.smil
-    提取主机: 182.139.235.40
-    提取路径: /PLTV/88888896/224/3221228807/10000100000000060000000003732597_0.smil
     """
     if not rtsp_url or not rtsp_url.startswith("rtsp://"):
         return ""
@@ -87,67 +88,89 @@ def buildCatchupSource(rtsp_url, original_url):
     if path_start == -1:
         return ""
 
-    rtsp_host = url_without_protocol[:path_start]  # 获取主机地址，如 182.139.235.40
-    rtsp_path = url_without_protocol[path_start:]  # 获取路径部分，如 /PLTV/...smil
+    rtsp_host = url_without_protocol[:path_start]  # 获取主机地址
+    rtsp_path = url_without_protocol[path_start:]  # 获取路径部分
 
     # 构建完整的回看源URL，使用动态提取的主机地址
     catchup_source = f"{catchupBaseUrl}/rtsp/{rtsp_host}{rtsp_path}?playseek=${{(b)yyyyMMddHHmmss}}-${{(e)yyyyMMddHHmmss}}"
 
     return catchup_source
 
-def loadIcon():
+def loadLocalMulticastData(file_path):
     """
-    加载图标数据，如果失败则返回空列表
-    图标加载失败不应该阻止整个程序运行
+    从本地HTML文件加载组播数据
     """
     try:
-        print(f"正在获取图标数据: {sourceIcon51ZMT}")
-        response = requests.get(sourceIcon51ZMT, verify=False, timeout=30)
-        response.raise_for_status()
-        
-        if not response.content:
-            print("⚠️  图标数据为空，将使用默认图标")
-            return []
+        if not os.path.exists(file_path):
+            print(f"❌ 本地文件不存在: {file_path}")
+            print(f"当前脚本位置: {script_dir}")
+            print(f"查找的文件: {os.path.basename(file_path)}")
+            print("请确保sctvmulticast.html文件存在于脚本目录中")
+            return None
             
-        res = response.content
-        soup = BeautifulSoup(res, 'lxml')
-        m = []
-
+        print(f"正在从本地文件读取数据: {os.path.basename(file_path)}")
+        print(f"文件完整路径: {file_path}")
+        
+        # 尝试多种编码
+        encodings = ['utf-8', 'gbk', 'gb2312', 'utf-16']
+        
+        for encoding in encodings:
+            try:
+                with open(file_path, 'r', encoding=encoding) as f:
+                    content = f.read()
+                print(f"✅ 使用{encoding}编码成功读取文件")
+                break
+            except UnicodeDecodeError:
+                continue
+        else:
+            print("❌ 无法用任何已知编码读取文件")
+            return None
+            
+        if not content:
+            print("⚠️  本地文件内容为空")
+            return None
+            
+        soup = BeautifulSoup(content, 'lxml')
+        
+        # 检查是否有有效的频道数据行
+        valid_rows = 0
         for tr in soup.find_all('tr'):
             td = tr.find_all('td')
-            if len(td) < 4:
-                continue
-
-            href = ""
-            for a in td[0].find_all('a', href=True):
-                if a["href"] == "#":
-                    continue
-                href = a["href"]
-
-            if href != "":
-                m.append({"id": td[3].string, "name": td[2].string, "icon": href})
-
-        print(f"成功加载 {len(m)} 个图标")
-        return m
+            if len(td) >= 7 and td[0].string and td[0].string != "序号":
+                valid_rows += 1
+                
+        if valid_rows == 0:
+            print("⚠️  未找到标准的频道数据行，尝试其他表格结构...")
+            
+        print(f"成功读取文件，找到 {valid_rows} 条标准频道数据")
+        return soup
         
-    except requests.exceptions.RequestException as e:
-        print(f"⚠️  图标数据获取失败: {e}")
-        print("将继续执行，但频道将使用默认图标")
-        return []
     except Exception as e:
-        print(f"⚠️  解析图标数据时发生错误: {e}")
-        print("将继续执行，但频道将使用默认图标")
-        return []
+        print(f"❌ 读取本地文件时发生错误: {e}")
+        print("请检查文件格式和内容")
+        return None
 
 def generateM3U8(file):
     """
     生成M3U8文件，包含异常处理
     """
     try:
+        # 确保home目录存在
+        home_dir = os.path.dirname(file)
+        if home_dir and not os.path.exists(home_dir):
+            os.makedirs(home_dir)
+            print(f"已创建目录: {home_dir}")
+            
         print(f"正在生成M3U8文件: {file}")
         with open(file, "w", encoding='utf-8') as f:
             name = '成都电信IPTV - ' + datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
-            title = f'#EXTM3U name="{name}" url-tvg="{totalEPG}"\n\n'
+            
+            # 如果有EPG源，则添加到M3U8头部
+            if totalEPG and totalEPG.strip():
+                title = f'#EXTM3U name="{name}" url-tvg="{totalEPG}"\n\n'
+            else:
+                title = f'#EXTM3U name="{name}"\n\n'
+                
             f.write(title)
 
             total_written = 0
@@ -159,10 +182,16 @@ def generateM3U8(file):
                     # 构建回看源URL
                     catchup_source = buildCatchupSource(c["rtsp_url"], c["address"])
 
-                    # 生成M3U8条目，添加回看参数
+                    # 生成M3U8条目
                     line = (f'#EXTINF:-1 tvg-logo="{c["icon"]}" tvg-id="{c["id"]}" '
-                           f'tvg-name="{c["name"]}" group-title="{k}" '
-                           f'catchup="default" catchup-source="{catchup_source}",{c["name"]}\n')
+                           f'tvg-name="{c["name"]}" group-title="{k}" ')
+                    
+                    # 如果有回看源，则添加catchup参数
+                    if catchup_source:
+                        line += f'catchup="default" catchup-source="{catchup_source}",{c["name"]}\n'
+                    else:
+                        line += f'{c["name"]}\n'
+                        
                     line2 = f'{homeLanAddress}/rtp/{c["address"]}?FCC=182.139.234.40:8027\n'
 
                     f.write(line)
@@ -170,96 +199,79 @@ def generateM3U8(file):
                     total_written += 1
 
         print(f"✅ M3U8文件生成成功，共写入 {total_written} 个频道")
+        print(f"文件位置: {os.path.abspath(file)}")
         
     except IOError as e:
         print(f"❌ 文件写入失败: {e}")
         print("请检查文件路径和写入权限")
-        print("ERROR: File write failed - GitHub Action will be terminated")
         sys.exit(1)
     except Exception as e:
         print(f"❌ 生成M3U8文件时发生未知错误: {e}")
-        print("ERROR: M3U8 generation failed - GitHub Action will be terminated")
         sys.exit(1)
 
 def generateHome():
-    generateM3U8("./home/iptv.m3u8")
+    # 确保home目录存在（相对于脚本所在目录的上一级）
+    home_dir = os.path.join(os.path.dirname(script_dir), "home")
+    if not os.path.exists(home_dir):
+        os.makedirs(home_dir)
+    generateM3U8(os.path.join(home_dir, "iptv.m3u8"))
 
 def main():
-    # 加载图标数据
-    mIcons = loadIcon()
-
-    # 获取成都组播数据
-    try:
-        print(f"正在获取成都组播数据: {sourceChengduMulticast}")
-        response = requests.get(sourceChengduMulticast, verify=False, timeout=30)
-        response.raise_for_status()  # 检查HTTP状态码
-        
-        if not response.content:
-            raise ValueError("获取到的内容为空")
-            
-        res = response.content
-        soup = BeautifulSoup(res, 'lxml')
-        
-        # 验证页面内容是否有效（检查是否包含表格数据）
-        tables = soup.find_all('table')
-        if not tables:
-            raise ValueError("页面中未找到表格数据，可能页面结构已变化")
-            
-        # 检查是否有有效的频道数据行
-        valid_rows = 0
-        for tr in soup.find_all('tr'):
-            td = tr.find_all('td')
-            if len(td) >= 7 and td[0].string != "序号":
-                valid_rows += 1
-                
-        if valid_rows == 0:
-            raise ValueError("未找到有效的频道数据")
-            
-        print(f"成功获取到 {valid_rows} 条频道数据")
-        
-    except requests.exceptions.RequestException as e:
-        print(f"❌ 网络请求失败: {e}")
-        print("请检查网络连接或稍后重试")
-        print("ERROR: Network request failed - GitHub Action will be terminated")
-        sys.exit(1)
-    except ValueError as e:
-        print(f"❌ 数据验证失败: {e}")
-        print("远程数据源可能已变化，请检查数据源")
-        print("ERROR: Data validation failed - GitHub Action will be terminated")
-        sys.exit(1)
-    except Exception as e:
-        print(f"❌ 获取成都组播数据时发生未知错误: {e}")
-        print("ERROR: Unknown error occurred - GitHub Action will be terminated")
+    # 从本地文件获取成都组播数据
+    soup = loadLocalMulticastData(local_multicast_file)
+    
+    if soup is None:
+        print("❌ 无法读取本地组播数据，程序退出")
         sys.exit(1)
 
     global m
     m = {}
 
+    processed_channels = 0
+    skipped_channels = 0
+    
     for tr in soup.find_all(name='tr'):
         td = tr.find_all(name='td')
-        if len(td) < 7 or td[0].string == "序号":
+        
+        # 确保有足够的列并且不是表头
+        if len(td) < 3 or (td[0].string and "序号" in td[0].string):
+            continue
+            
+        # 获取频道信息
+        channel_name = td[1].string if len(td) > 1 and td[1].string else None
+        channel_address = td[2].string if len(td) > 2 and td[2].string else None
+        
+        if not channel_name or not channel_address:
+            skipped_channels += 1
+            continue
+            
+        # 过滤不需要的频道
+        if isIn(listUnused, channel_name):
+            skipped_channels += 1
             continue
 
-        name = td[1].string
-        if isIn(listUnused, name):
-            continue
-
-        setID(int(td[0].string))
+        # 设置ID
+        if len(td) > 0 and td[0].string and td[0].string.isdigit():
+            try:
+                setID(int(td[0].string))
+            except ValueError:
+                pass
 
         # 清理频道名称
+        name = channel_name
         name = name.replace('超高清', '').replace('高清', '').replace('-', '').strip()
 
-        groups = filterCategory(name)  # 现在返回分组列表
-        icon = findIcon(mIcons, name)
+        groups = filterCategory(name)
+        icon = findIcon(name)
 
         # 提取rtsp URL
-        rtsp_url = td[6].string if td[6].string else ""
+        rtsp_url = td[6].string if len(td) > 6 and td[6].string else ""
 
         # 创建频道信息对象
         channel_info = {
-            "id": td[0].string,
+            "id": td[0].string if len(td) > 0 and td[0].string else str(getID()),
             "name": name,
-            "address": td[2].string,
+            "address": channel_address,
             "rtsp_url": rtsp_url,
             "ct": True,
             "icon": icon
@@ -270,31 +282,39 @@ def main():
             if group not in m:
                 m[group] = []
             m[group].append(channel_info)
+            
+        processed_channels += 1
 
     # 验证是否有足够的频道数据
     total_channels = sum(len(channels) for channels in m.values())
     if total_channels == 0:
         print("❌ 未获取到任何频道数据，无法生成M3U8文件")
-        print("ERROR: No channel data found - GitHub Action will be terminated")
+        print(f"已处理: {processed_channels} 个频道，跳过: {skipped_channels} 个频道")
         sys.exit(1)
     
     print(f"✅ 数据处理完成，共获取到 {total_channels} 个频道，分布在 {len(m)} 个分组中")
-    for group, channels in m.items():
+    print(f"已处理: {processed_channels} 个频道，跳过: {skipped_channels} 个频道")
+    
+    for group, channels in sorted(m.items()):
         print(f"   - {group}: {len(channels)} 个频道")
 
     generateHome()
 
 if __name__ == "__main__":
     try:
+        print("=" * 50)
+        print("成都IPTV M3U8生成器 - 本地模式")
+        print("=" * 50)
+        print(f"脚本目录: {script_dir}")
+        print(f"数据文件: {local_multicast_file}")
+        print(f"EPG源: {totalEPG if totalEPG else '无'}")
+        print("=" * 50)
         main()
         print("✅ 脚本执行成功完成")
     except SystemExit:
-        # 重新抛出SystemExit，保持原有的退出码
         raise
     except Exception as e:
         print(f"❌ 脚本执行过程中发生严重错误: {e}")
-        print("ERROR: Critical error occurred - GitHub Action will be terminated")
         import traceback
         traceback.print_exc()
         sys.exit(1)
-
