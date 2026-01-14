@@ -3,7 +3,7 @@ name: 自动更新IPTV列表
 on:
   schedule:
     # 每天UTC时间0点运行（北京时间早上8点）
-    - cron: '0 0 * * *'
+    - cron: '0 0 1 * *'
   # 代码推送时也运行
   push:
     branches: [ master ]
