@@ -2,12 +2,10 @@ name: 自动更新IPTV列表
 
 on:
   schedule:
-    # 每天UTC时间0点运行（北京时间早上8点）
-    - cron: '0 0 1 * *'
-  # 代码推送时也运行
+    # 每天UTC时间0点运行（北京时间早上8点）—— 修正为每天执行
+    - cron: '0 0 * * *'
   push:
     branches: [ master ]
-  # 允许手动触发
   workflow_dispatch:
 
 permissions:
@@ -22,28 +20,43 @@ jobs:
       uses: actions/checkout@v4
       with:
         fetch-depth: 0
-    
+
     - name: 设置Python
       uses: actions/setup-python@v5
       with:
         python-version: '3.10'
-    
+
+    # ---------- 新增：安装 Chrome 浏览器（专用Action，带缓存）----------
+    - name: 安装 Chrome
+      uses: browser-actions/setup-chrome@v2
+      with:
+        chrome-version: stable
+
+    # ---------- 新增：安装 ChromeDriver（自动匹配Chrome版本）----------
+    - name: 安装 ChromeDriver
+      uses: nanasess/setup-chromedriver@master
+
+    # ---------- 安装 Python 依赖 ----------
     - name: 安装依赖
       run: |
+        # 如果 requirements.txt 已包含 selenium 和 webdriver-manager，则无需下面两行
+        # 若未包含，请取消注释以下命令或直接更新 requirements.txt
+        # pip install selenium webdriver-manager
         pip install -r requirements.txt
-    
+
+    # ---------- 运行你的脚本 ----------
     - name: 生成M3U8文件
       run: |
         python script/home.py
-    
+
+    # ---------- Git 配置与提交 ----------
     - name: 配置Git用户
       run: |
         git config --global user.name "GitHub Actions"
         git config --global user.email "actions@github.com"
-    
+
     - name: 提交更新
       run: |
-        # 检查是否有文件变化
         if [[ -n $(git status --porcelain --untracked-files=no) ]]; then
           git add home/iptv.m3u8
           git commit -m "自动更新IPTV列表 - $(date '+%Y-%m-%d %H:%M:%S')"
