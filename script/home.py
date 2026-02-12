@@ -6,15 +6,15 @@ from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime
 import sys
+import os
 
-# ---------- 配置常量（保持不变）----------
+# ---------- 配置常量（完全不变）----------
 sourceIcon51ZMT = "https://epg.51zmt.top:8001"
 sourceChengduMulticast = "https://epg.51zmt.top:8001/multicast/"
 homeLanAddress = "http://192.168.10.2:4022"
 catchupBaseUrl = "http://192.168.10.2:4022"
 totalEPG = "https://epg.51zmt.top:8001/e.xml,https://epg.112114.xyz/pp.xml"
 
-# 分组配置
 groupCCTV = ["CCTV", "CETV", "CGTN"]
 groupWS = ["卫视"]
 groupSC = ["SCTV", "四川", "CDTV", "熊猫", "峨眉", "成都"]
@@ -25,7 +25,7 @@ listUnused = ["单音轨", "画中画", "热门", "直播室", "爱", "92"]
 index = 1
 def getID():
     global index
-    index = index + 1
+    index += 1
     return index - 1
 
 def setID(i):
@@ -72,7 +72,6 @@ def buildCatchupSource(rtsp_url, original_url):
     return f"{catchupBaseUrl}/rtsp/{rtsp_host}{rtsp_path}?playseek=${{(b)yyyyMMddHHmmss}}-${{(e)yyyyMMddHHmmss}}"
 
 def loadIcon():
-    """加载图标（原逻辑，如果失败返回空列表，不影响主流程）"""
     try:
         print("正在获取图标数据...")
         resp = requests.get(sourceIcon51ZMT, verify=False, timeout=30)
@@ -97,12 +96,20 @@ def loadIcon():
         return []
 
 def generateM3U8(file):
-    """生成 M3U8 文件（完全保留原逻辑）"""
     try:
         print(f"正在生成 M3U8: {file}")
         with open(file, "w", encoding='utf-8') as f:
             name = '成都电信IPTV - ' + datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
-            f.write(f'#EXTM3U name="{name}" url-tvg="{totalEPG}"\n\n')
+            f.write(f'#EXTM3U name="{name}" url-tvg="{totalEPG}"\n')
+            
+            # 添加 GitHub Raw 播放地址（如果在 Actions 中）
+            repo = os.environ.get("GITHUB_REPOSITORY")
+            ref = os.environ.get("GITHUB_REF_NAME")
+            if repo and ref:
+                raw_url = f"https://raw.githubusercontent.com/{repo}/{ref}/home/iptv.m3u8"
+                f.write(f'# 在线播放地址（可直接在播放器打开）: {raw_url}\n')
+            f.write('\n')
+            
             total = 0
             for group, channels in m.items():
                 for ch in channels:
@@ -124,12 +131,12 @@ def generateM3U8(file):
 def generateHome():
     generateM3U8("./home/iptv.m3u8")
 
-# ---------- 🚀 全新 main() 函数：直接从 API 获取 JSON ----------
+# ---------- 🚀 最终稳定版 main() ----------
 def main():
-    # 1. 加载图标（若失败则为空列表）
+    # 1. 加载图标（非必须）
     icons = loadIcon()
 
-    # 2. 从 API 获取频道数据（核心改动）
+    # 2. 从 API 获取频道数据（适配您提供的真实结构）
     api_url = "https://epg.51zmt.top:8001/multicast/api/channels/1/"
     headers = {
         "Referer": "https://epg.51zmt.top:8001/multicast/",
@@ -140,33 +147,46 @@ def main():
     try:
         print(f"正在请求 API: {api_url}")
         session = requests.Session()
-        # 先访问首页获取必要的 Cookie（模拟浏览器行为）
+        # 先访问首页获取 Cookie
         session.get("https://epg.51zmt.top:8001/multicast/", verify=False, timeout=30)
         resp = session.get(api_url, headers=headers, verify=False, timeout=30)
         resp.raise_for_status()
-        channels_data = resp.json()
-        print(f"✅ API 请求成功，获取到 {len(channels_data)} 条原始频道")
+
+        # 解析 JSON
+        data = resp.json()
+        
+        # 检查响应状态
+        if not data.get("success"):
+            print(f"❌ API 返回失败状态: {data}")
+            sys.exit(1)
+        
+        # 提取频道列表（关键！）
+        channels_data = data.get("channels", [])
+        if not isinstance(channels_data, list):
+            print("❌ channels 字段不是列表")
+            sys.exit(1)
+            
+        print(f"✅ API 请求成功，获取到 {len(channels_data)} 个频道")
+        print(f"📺 数据来源: {data.get('source', {}).get('name', '未知')}")
+        
     except Exception as e:
-        print(f"❌ API 请求失败: {e}")
+        print(f"❌ API 请求/解析失败: {e}")
         sys.exit(1)
 
-    # 3. 将 API 返回的数据转换为内部数据结构 m
+    # 3. 将 API 数据转换为内部结构 m
     global m
     m = {}
-    seq = 1  # 自增 ID，仅当 API 未提供 id 时使用
 
     for item in channels_data:
-        # ⚠️⚠️⚠️ 请根据您实际看到的 JSON 字段名修改以下字典的键 ⚠️⚠️⚠️
-        # 常见字段名推测（以实际返回为准）：
-        name = item.get("name", "").strip()
-        address = item.get("address", "")
-        rtsp_url = item.get("rtsp_url", "") or item.get("rtsp", "")
-        channel_id = item.get("id", str(seq))
-        # 如果还有其它字段（如 logo、group 等），可按需添加
-        # --------------------------------------------------------------
+        # ---------- 字段映射（完全适配您看到的API）----------
+        name = item.get("channel_name", "").strip()
+        address = item.get("multicast_address", "")  # 直接使用组播地址
+        rtsp_url = item.get("replay_url", "")
+        channel_id = str(item.get("index", ""))  # 使用 index 作为 tvg-id
+        # ----------------------------------------------------
 
         # 过滤无用频道
-        if isIn(listUnused, name):
+        if not name or isIn(listUnused, name):
             continue
 
         # 清理名称（与原逻辑一致）
@@ -176,7 +196,7 @@ def main():
         groups = filterCategory(name)
         icon = findIcon(icons, name)
 
-        # 构造频道信息对象（与原结构完全一致）
+        # 构造频道信息对象
         channel_info = {
             "id": channel_id,
             "name": name,
@@ -191,8 +211,6 @@ def main():
             if group not in m:
                 m[group] = []
             m[group].append(channel_info)
-
-        seq += 1
 
     # 4. 验证数据并生成 M3U8
     total_channels = sum(len(ch) for ch in m.values())
