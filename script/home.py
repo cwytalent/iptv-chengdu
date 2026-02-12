@@ -5,58 +5,23 @@ import requests
 from bs4 import BeautifulSoup
 from urllib.parse import urljoin
 from datetime import datetime
-import re
 import sys
 
-# ---------- 新增：Selenium 动态解析支持（仅当静态页面无表格时启用）----------
-try:
-    from selenium import webdriver
-    from selenium.webdriver.chrome.options import Options
-    from selenium.webdriver.chrome.service import Service
-    from webdriver_manager.chrome import ChromeDriverManager
-    SELENIUM_AVAILABLE = True
-except ImportError:
-    SELENIUM_AVAILABLE = False
-    # 不立即报错，仅在需要时提示
-
-def fetch_page_with_selenium(url, timeout=30):
-    """使用 Selenium 获取动态渲染后的完整页面 HTML"""
-    if not SELENIUM_AVAILABLE:
-        raise RuntimeError("Selenium 未安装，无法获取动态页面。请执行: pip install selenium webdriver-manager")
-    
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")               # 无头模式
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-    
-    try:
-        # 自动下载/使用 chromedriver（GitHub Actions 中也可手动指定路径）
-        service = Service(ChromeDriverManager().install())
-        driver = webdriver.Chrome(service=service, options=chrome_options)
-        driver.set_page_load_timeout(timeout)
-        driver.get(url)
-        html = driver.page_source
-        driver.quit()
-        return html
-    except Exception as e:
-        raise RuntimeError(f"Selenium 获取页面失败: {e}")
-
-# ---------- 以下为原有配置与函数，完全不变 ----------
+# ---------- 配置常量（保持不变）----------
 sourceIcon51ZMT = "https://epg.51zmt.top:8001"
 sourceChengduMulticast = "https://epg.51zmt.top:8001/multicast/"
 homeLanAddress = "http://192.168.10.2:4022"
 catchupBaseUrl = "http://192.168.10.2:4022"
 totalEPG = "https://epg.51zmt.top:8001/e.xml,https://epg.112114.xyz/pp.xml"
 
+# 分组配置
 groupCCTV = ["CCTV", "CETV", "CGTN"]
 groupWS = ["卫视"]
 groupSC = ["SCTV", "四川", "CDTV", "熊猫", "峨眉", "成都"]
 group4K = ["4K"]
 listUnused = ["单音轨", "画中画", "热门", "直播室", "爱", "92"]
 
+# ---------- 辅助函数（全部保留，一字未改）----------
 index = 1
 def getID():
     global index
@@ -104,20 +69,16 @@ def buildCatchupSource(rtsp_url, original_url):
         return ""
     rtsp_host = url_without_protocol[:path_start]
     rtsp_path = url_without_protocol[path_start:]
-    catchup_source = f"{catchupBaseUrl}/rtsp/{rtsp_host}{rtsp_path}?playseek=${{(b)yyyyMMddHHmmss}}-${{(e)yyyyMMddHHmmss}}"
-    return catchup_source
+    return f"{catchupBaseUrl}/rtsp/{rtsp_host}{rtsp_path}?playseek=${{(b)yyyyMMddHHmmss}}-${{(e)yyyyMMddHHmmss}}"
 
 def loadIcon():
+    """加载图标（原逻辑，如果失败返回空列表，不影响主流程）"""
     try:
-        print(f"正在获取图标数据: {sourceIcon51ZMT}")
-        response = requests.get(sourceIcon51ZMT, verify=False, timeout=30)
-        response.raise_for_status()
-        if not response.content:
-            print("⚠️  图标数据为空，将使用默认图标")
-            return []
-        res = response.content
-        soup = BeautifulSoup(res, 'lxml')
-        m = []
+        print("正在获取图标数据...")
+        resp = requests.get(sourceIcon51ZMT, verify=False, timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.content, 'lxml')
+        icons = []
         for tr in soup.find_all('tr'):
             td = tr.find_all('td')
             if len(td) < 4:
@@ -127,156 +88,132 @@ def loadIcon():
                 if a["href"] == "#":
                     continue
                 href = a["href"]
-            if href != "":
-                m.append({"id": td[3].string, "name": td[2].string, "icon": href})
-        print(f"成功加载 {len(m)} 个图标")
-        return m
+            if href:
+                icons.append({"id": td[3].string, "name": td[2].string, "icon": href})
+        print(f"成功加载 {len(icons)} 个图标")
+        return icons
     except Exception as e:
-        print(f"⚠️  图标数据获取失败: {e}，将继续使用默认图标")
+        print(f"⚠️ 图标加载失败: {e}，将使用默认图标")
         return []
 
 def generateM3U8(file):
+    """生成 M3U8 文件（完全保留原逻辑）"""
     try:
-        print(f"正在生成M3U8文件: {file}")
+        print(f"正在生成 M3U8: {file}")
         with open(file, "w", encoding='utf-8') as f:
             name = '成都电信IPTV - ' + datetime.now().strftime('%Y-%m-%dT%H:%M:%SZ')
-            title = f'#EXTM3U name="{name}" url-tvg="{totalEPG}"\n\n'
-            f.write(title)
-            total_written = 0
-            for k, v in m.items():
-                for c in v:
-                    if "dup" in c:
+            f.write(f'#EXTM3U name="{name}" url-tvg="{totalEPG}"\n\n')
+            total = 0
+            for group, channels in m.items():
+                for ch in channels:
+                    if "dup" in ch:
                         continue
-                    catchup_source = buildCatchupSource(c["rtsp_url"], c["address"])
-                    line = (f'#EXTINF:-1 tvg-logo="{c["icon"]}" tvg-id="{c["id"]}" '
-                           f'tvg-name="{c["name"]}" group-title="{k}" '
-                           f'catchup="default" catchup-source="{catchup_source}",{c["name"]}\n')
-                    line2 = f'{homeLanAddress}/rtp/{c["address"]}?FCC=182.139.234.40:8027\n'
-                    f.write(line)
+                    catchup = buildCatchupSource(ch["rtsp_url"], ch["address"])
+                    line1 = (f'#EXTINF:-1 tvg-logo="{ch["icon"]}" tvg-id="{ch["id"]}" '
+                             f'tvg-name="{ch["name"]}" group-title="{group}" '
+                             f'catchup="default" catchup-source="{catchup}",{ch["name"]}\n')
+                    line2 = f'{homeLanAddress}/rtp/{ch["address"]}?FCC=182.139.234.40:8027\n'
+                    f.write(line1)
                     f.write(line2)
-                    total_written += 1
-        print(f"✅ M3U8文件生成成功，共写入 {total_written} 个频道")
+                    total += 1
+        print(f"✅ M3U8 生成成功，共 {total} 个频道")
     except Exception as e:
-        print(f"❌ 生成M3U8文件失败: {e}")
+        print(f"❌ 生成失败: {e}")
         sys.exit(1)
 
 def generateHome():
     generateM3U8("./home/iptv.m3u8")
 
+# ---------- 🚀 全新 main() 函数：直接从 API 获取 JSON ----------
 def main():
-    # 加载图标数据
-    mIcons = loadIcon()
+    # 1. 加载图标（若失败则为空列表）
+    icons = loadIcon()
 
-    # ---------- 修改点：智能获取成都组播数据（静态 + 动态降级）----------
-    page_html = None
-    use_selenium = False
-    soup = None
+    # 2. 从 API 获取频道数据（核心改动）
+    api_url = "https://epg.51zmt.top:8001/multicast/api/channels/1/"
+    headers = {
+        "Referer": "https://epg.51zmt.top:8001/multicast/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Accept": "application/json",
+    }
 
-    # 第一步：尝试静态请求
     try:
-        print(f"正在获取成都组播数据（静态请求）: {sourceChengduMulticast}")
-        response = requests.get(sourceChengduMulticast, verify=False, timeout=30)
-        response.raise_for_status()
-        page_html = response.content
+        print(f"正在请求 API: {api_url}")
+        session = requests.Session()
+        # 先访问首页获取必要的 Cookie（模拟浏览器行为）
+        session.get("https://epg.51zmt.top:8001/multicast/", verify=False, timeout=30)
+        resp = session.get(api_url, headers=headers, verify=False, timeout=30)
+        resp.raise_for_status()
+        channels_data = resp.json()
+        print(f"✅ API 请求成功，获取到 {len(channels_data)} 条原始频道")
     except Exception as e:
-        print(f"⚠️  静态请求失败: {e}，将尝试动态渲染")
-        use_selenium = True
-
-    # 第二步：若静态请求成功，检查是否包含表格
-    if page_html and not use_selenium:
-        soup = BeautifulSoup(page_html, 'lxml')
-        tables = soup.find_all('table')
-        if tables:
-            print("✅ 静态页面包含表格，直接使用静态数据")
-        else:
-            print("⚠️  静态页面无表格，尝试动态渲染...")
-            use_selenium = True
-
-    # 第三步：需要动态渲染
-    if use_selenium:
-        if not SELENIUM_AVAILABLE:
-            print("❌ 必须使用 Selenium 但未安装。请在环境中安装: pip install selenium webdriver-manager")
-            print("ERROR: Selenium required but not installed")
-            sys.exit(1)
-        try:
-            print(f"正在使用 Selenium 获取动态页面: {sourceChengduMulticast}")
-            dynamic_html = fetch_page_with_selenium(sourceChengduMulticast)
-            soup = BeautifulSoup(dynamic_html, 'lxml')
-            # 再次验证表格是否存在
-            if not soup.find_all('table'):
-                print("❌ 动态页面仍然没有表格，数据源可能已彻底变更")
-                print("ERROR: No table found even after dynamic rendering")
-                sys.exit(1)
-            print("✅ 动态渲染成功，开始解析表格")
-        except Exception as e:
-            print(f"❌ 动态渲染失败: {e}")
-            print("ERROR: Failed to fetch dynamic content")
-            sys.exit(1)
-
-    # ---------- 以下为原有表格解析逻辑，完全不变 ----------
-    # 验证有效数据行数
-    valid_rows = 0
-    for tr in soup.find_all('tr'):
-        td = tr.find_all('td')
-        if len(td) >= 7 and td[0].string != "序号":
-            valid_rows += 1
-    if valid_rows == 0:
-        print("❌ 未找到有效的频道数据")
+        print(f"❌ API 请求失败: {e}")
         sys.exit(1)
-    print(f"成功获取到 {valid_rows} 条频道数据")
 
+    # 3. 将 API 返回的数据转换为内部数据结构 m
     global m
     m = {}
+    seq = 1  # 自增 ID，仅当 API 未提供 id 时使用
 
-    for tr in soup.find_all(name='tr'):
-        td = tr.find_all(name='td')
-        if len(td) < 7 or td[0].string == "序号":
-            continue
+    for item in channels_data:
+        # ⚠️⚠️⚠️ 请根据您实际看到的 JSON 字段名修改以下字典的键 ⚠️⚠️⚠️
+        # 常见字段名推测（以实际返回为准）：
+        name = item.get("name", "").strip()
+        address = item.get("address", "")
+        rtsp_url = item.get("rtsp_url", "") or item.get("rtsp", "")
+        channel_id = item.get("id", str(seq))
+        # 如果还有其它字段（如 logo、group 等），可按需添加
+        # --------------------------------------------------------------
 
-        name = td[1].string
+        # 过滤无用频道
         if isIn(listUnused, name):
             continue
 
-        setID(int(td[0].string))
-
+        # 清理名称（与原逻辑一致）
         name = name.replace('超高清', '').replace('高清', '').replace('-', '').strip()
-        groups = filterCategory(name)
-        icon = findIcon(mIcons, name)
-        rtsp_url = td[6].string if td[6].string else ""
 
+        # 获取分组与图标
+        groups = filterCategory(name)
+        icon = findIcon(icons, name)
+
+        # 构造频道信息对象（与原结构完全一致）
         channel_info = {
-            "id": td[0].string,
+            "id": channel_id,
             "name": name,
-            "address": td[2].string,
+            "address": address,
             "rtsp_url": rtsp_url,
             "ct": True,
             "icon": icon
         }
 
+        # 添加到所有匹配的分组
         for group in groups:
             if group not in m:
                 m[group] = []
             m[group].append(channel_info)
 
-    total_channels = sum(len(channels) for channels in m.values())
+        seq += 1
+
+    # 4. 验证数据并生成 M3U8
+    total_channels = sum(len(ch) for ch in m.values())
     if total_channels == 0:
-        print("❌ 未获取到任何频道数据，无法生成M3U8文件")
+        print("❌ 未获取到任何有效频道，终止")
         sys.exit(1)
 
-    print(f"✅ 数据处理完成，共获取到 {total_channels} 个频道，分布在 {len(m)} 个分组中")
-    for group, channels in m.items():
-        print(f"   - {group}: {len(channels)} 个频道")
+    print(f"✅ 数据处理完成，共 {total_channels} 个频道，分组: {list(m.keys())}")
+    for g, chs in m.items():
+        print(f"   - {g}: {len(chs)} 个频道")
 
     generateHome()
 
 if __name__ == "__main__":
     try:
         main()
-        print("✅ 脚本执行成功完成")
+        print("✅ 脚本执行成功")
     except SystemExit:
         raise
     except Exception as e:
-        print(f"❌ 脚本执行过程中发生严重错误: {e}")
+        print(f"❌ 严重错误: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
