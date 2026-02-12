@@ -41,17 +41,27 @@ def isIn(items, v):
     return False
 
 def filterCategory(v):
+    """
+    返回频道名匹配的所有分组
+    若频道名包含4K，则只返回["4K"]
+    否则按原有规则匹配多个分组（CCTV、卫视、四川等）
+    """
+    # 优先判断4K —— 只要包含4K，直接返回，不再检查其他分组
+    if "4K" in v:
+        return ["4K"]
+    
     categories = []
     if isIn(groupCCTV, v):
         categories.append("CCTV")
     if isIn(groupWS, v):
         categories.append("卫视")
-    if isIn(group4K, v):
-        categories.append("4K")
     if isIn(groupSC, v):
         categories.append("四川")
+    
+    # 如果没有匹配任何分组，则归类为"其他"
     if not categories:
         categories.append("其他")
+    
     return categories
 
 def findIcon(m, id):
