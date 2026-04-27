@@ -1,4 +1,4 @@
-#EXTM3U name="成都电信IPTV - 2026-04-26T02:06:00Z" url-tvg="https://epg.51zmt.top:8001/e.xml,https://epg.112114.xyz/pp.xml"
+#EXTM3U name="成都电信IPTV - 2026-04-27T02:08:12Z" url-tvg="https://epg.51zmt.top:8001/e.xml,https://epg.112114.xyz/pp.xml"
 # 在线播放地址（可直接在播放器打开）: https://raw.githubusercontent.com/cwytalent/iptv-chengdu/master/home/iptv.m3u8
 
 #EXTINF:-1 tvg-logo="" tvg-id="1" tvg-name="CCTV1" group-title="CCTV" catchup="default" catchup-source="http://192.168.10.2:4022/rtsp/182.139.234.40/PLTV/88888896/224/3221228807/10000100000000060000000003732597_0.smil?playseek=${(b)yyyyMMddHHmmss}-${(e)yyyyMMddHHmmss}",CCTV1
